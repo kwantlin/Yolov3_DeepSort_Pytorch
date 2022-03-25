@@ -93,20 +93,25 @@ def detect(save_img=True):
     # Run inference
     t0 = time.time()
     for path, img, im0s, vid_cap in dataset:
+        print("path", path)
+        print("im0s", im0s.shape)
+        print("img", img.shape)
         t = time.time()
 
         # Get detections
         img = torch.from_numpy(img).to(device)
+        print(img.shape)
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
+        print("final image size", img.shape)
         pred = model(img)[0]
-
+        print(len(pred))
         if opt.half:
             pred = pred.float()
 
         # Apply NMS
         pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
-
+        print(pred[0].shape)
         # Process detections
         for i, det in enumerate(pred):  # detections per image
             if webcam:  # batch_size >= 1
