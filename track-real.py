@@ -9,9 +9,13 @@ import pyrealsense2 as rs
 import numpy as np
 import cv2
 
+deepsort = DeepSort("deep_sort/deep/checkpoint/ckpt.t7")
+palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
+
+# https://lifesaver.codes/answer/intel-realsense-loadwebcam-instead-of-loadstreams-692
 class LoadRealSense2:  # Stream from Intel RealSense D435
 
-    def __init__(self, width='640', height='480', fps='30'):
+    def __init__(self, pipe,cfg,profile,rspath,width='640', height='480', fps='30'):
 
         # Variabels for setup
         self.width = width
@@ -23,15 +27,20 @@ class LoadRealSense2:  # Stream from Intel RealSense D435
         self.half = False
 
         # Setup
-        self.pipe = rs.pipeline()
-        self.cfg = rs.config()
-        self.cfg.enable_stream(rs.stream.depth, self.width, self.height, rs.format.z16, self.fps)
-        self.cfg.enable_stream(rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps)
+        # self.pipe = rs.pipeline()
+        # self.cfg = rs.config()
+        
+        # self.cfg.enable_stream(rs.stream.depth, self.width, self.height, rs.format.z16, self.fps)
+        # self.cfg.enable_stream(rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps)
 
-        # Start streaming
-        self.profile = self.pipe.start(self.cfg)
-        self.path = rs.pipeline_profile()
-        print(self.path)
+        # # Start streaming
+        # self.profile = self.pipe.start(self.cfg)
+        # self.path = rs.pipeline_profile()
+        # print(self.path)
+        self.pipe=pipe
+        self.cfg=cfg
+        self.profile=profile
+        self.path=rspath
 
         print("streaming at w = " + str(self.width) + " h = " + str(self.height) + " fps = " + str(self.fps))
 
@@ -142,41 +151,6 @@ class LoadRealSense2:  # Stream from Intel RealSense D435
 
     def __len__(self):
         return 0  # 1E12 frames = 32 streams at 30 FPS for 30 years
-        
-deepsort = DeepSort("deep_sort/deep/checkpoint/ckpt.t7")
-palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
-
-def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True, stride=32):
-    # Resize and pad image while meeting stride-multiple constraints
-    shape = im.shape[:2]  # current shape [height, width]
-    if isinstance(new_shape, int):
-        new_shape = (new_shape, new_shape)
-
-    # Scale ratio (new / old)
-    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
-    if not scaleup:  # only scale down, do not scale up (for better val mAP)
-        r = min(r, 1.0)
-
-    # Compute padding
-    ratio = r, r  # width, height ratios
-    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
-    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
-    if auto:  # minimum rectangle
-        dw, dh = np.mod(dw, stride), np.mod(dh, stride)  # wh padding
-    elif scaleFill:  # stretch
-        dw, dh = 0.0, 0.0
-        new_unpad = (new_shape[1], new_shape[0])
-        ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]  # width, height ratios
-
-    dw /= 2  # divide padding into 2 sides
-    dh /= 2
-
-    if shape[::-1] != new_unpad:  # resize
-        im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
-    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-    im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
-    return im, ratio, (dw, dh)
 
 def bbox_rel(image_width, image_height, bbox_left, bbox_top, bbox_w, bbox_h):
     """" Calculates the relative bounding box from absolute pixel values. """
@@ -214,9 +188,10 @@ def draw_boxes(img, bbox, identities=None, offset=(0,0)):
 
 
 
-def detect(save_img=True):
+def detect(pipe,cfg,profile,rspath,save_img=True):
     img_size = (320, 192) if ONNX_EXPORT else opt.img_size  # (320, 192) or (416, 256) or (608, 352) for (height, width)
-    out, weights, half, view_img, save_txt = opt.output, opt.weights, opt.half, opt.view_img, opt.save_txt
+    out, source, weights, half, view_img, save_txt = opt.output, opt.source, opt.weights, opt.half, opt.view_img, opt.save_txt
+    webcam = source == '0' or source.startswith('rtsp') or source.startswith('http') or source.endswith('.txt')
 
     # Initialize
     device = torch_utils.select_device(device='cpu' if ONNX_EXPORT else opt.device)
@@ -244,10 +219,15 @@ def detect(save_img=True):
 
     # Set Dataloader
     vid_path, vid_writer = None, None
-    save_img = False
-    view_img = True
-    torch.backends.cudnn.benchmark = True  # set True to speed up constant image size inference
-    # dataset = LoadStreams(source, img_size=img_size, half=half)
+    save_img=False
+    view_img=True
+    torch.backends.cudnn.benchmark=True
+    dataset = LoadRealSense2(pipe,cfg,profile,rspath)
+    # if webcam:
+    #     save_img = False
+    #     view_img = True
+    #     torch.backends.cudnn.benchmark = True  # set True to speed up constant image size inference
+    #     dataset = LoadStreams(source, img_size=img_size, half=half)
     # else:
     #     save_img = True
     #     dataset = LoadImages(source, img_size=img_size, half=half)
@@ -258,150 +238,98 @@ def detect(save_img=True):
 
     # Run inference
     t0 = time.time()
+    for path, depth, distance, depth_scale, img, im0s, _ in dataset:
+        print("path", path)
+        print("im0s", im0s.shape)
+        print("img", img.shape)
+        t = time.time()
 
-    # Configure depth and color streams
-    pipeline = rs.pipeline()
-    config = rs.config()
-    ctx = rs.context()
-    devices = ctx.query_devices()
-    for dev in devices:
-        dev.hardware_reset()
-    # Get device product line for setting a supporting resolution
-    pipeline_wrapper = rs.pipeline_wrapper(pipeline)
-    pipeline_profile = config.resolve(pipeline_wrapper)
-    device_realsense = pipeline_profile.get_device()
-    device_product_line = str(device_realsense.get_info(rs.camera_info.product_line))
+        # Get detections
+        img = torch.from_numpy(img).to(device)
+        print(img.shape)
+        if img.ndimension() == 3:
+            img = img.unsqueeze(0)
+        print("final image size", img.shape)
+        pred = model(img)[0]
+        print(len(pred))
+        if opt.half:
+            pred = pred.float()
 
-    found_rgb = False
-    for s in device_realsense.sensors:
-        if s.get_info(rs.camera_info.name) == 'RGB Camera':
-            found_rgb = True
-            print("Found rgb")
-            break
-    if not found_rgb:
-        print("The demo requires Depth camera with Color sensor")
-        exit(0)
+        # Apply NMS
+        pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
+        print(pred[0].shape)
+        # Process detections
+        for i, det in enumerate(pred):  # detections per image
+            if webcam:  # batch_size >= 1
+                p, s, im0 = path[i], '%g: ' % i, im0s[i]
+            else:
+                p, s, im0 = path, '', im0s
 
-    config.enable_stream(rs.stream.color, 640, 480, rs.format.rgb8, 30)
+            save_path = str(Path(out) / Path(p).name)
+            s += '%gx%g ' % img.shape[2:]  # print string
+            if det is not None and len(det):
+                # Rescale boxes from img_size to im0 size
+                det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+                # print(det[:, :5])
+                # Print results
+                for c in det[:, -1].unique():
+                    n = (det[:, -1] == c).sum()  # detections per class
+                    s += '%g %ss, ' % (n, names[int(c)])  # add to string
 
-    # if device_product_line == 'L500':
-    #     config.enable_stream(rs.stream.color, 960, 540, rs.format.bgr8, 30)
-    # else:
-    #     config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+                bbox_xywh = []
+                confs = []
 
-    # Start streaming
-    pipeline.start(config)
+                # Write results
+                for *xyxy, conf, cls in det:
+                    img_h, img_w, _ = im0.shape  # get image shape
+                    bbox_left = min([xyxy[0].item(), xyxy[2].item()])
+                    bbox_top = min([xyxy[1].item(), xyxy[3].item()])
+                    bbox_w = abs(xyxy[0].item() - xyxy[2].item())
+                    bbox_h = abs(xyxy[1].item() - xyxy[3].item())
+                    x_c, y_c, bbox_w, bbox_h = bbox_rel(img_w, img_h, bbox_left, bbox_top, bbox_w, bbox_h)
+                    #print(x_c, y_c, bbox_w, bbox_h)
+                    obj = [x_c, y_c, bbox_w, bbox_h]
+                    bbox_xywh.append(obj)
+                    confs.append([conf.item()])
+                    label = '%s %.2f' % (names[int(cls)], conf)
+                    #
+                    #print('bboxes')
+                    #print(torch.Tensor(bbox_xywh))
+                    #print('confs')
+                    #print(torch.Tensor(confs))
+                    outputs = deepsort.update((torch.Tensor(bbox_xywh)), (torch.Tensor(confs)) , im0)
+                    if len(outputs) > 0:
+                        bbox_xyxy = outputs[:, :4]
+                        identities = outputs[:, -1]
+                        draw_boxes(im0, bbox_xyxy, identities)
+                    #print('\n\n\t\ttracked objects')
+                    #print(outputs)
 
-    try:
-        while True:
-            # Wait for a coherent pair of frames: depth and color
-            frames = pipeline.wait_for_frames()
-            print("getting frames")
-            # depth_frame = frames.get_depth_frame()
-            color_frame = frames.get_color_frame()
-            if not color_frame:
-                continue
-            img = np.asanyarray(color_frame.get_data())
-            im0s = [img.copy()]
-            img = letterbox(img, img_size, stride=32,auto=True)[0]
-            img = img.transpose((2, 0, 1))
-            # img = np.moveaxis(img,-1,0)[:480, :608,:]
-            print("new img shape", img.shape)
-            t = time.time()
+            # Print time (inference + NMS)
+            print('%sDone. (%.3fs)' % (s, time.time() - t))
 
-            # Get detections
-            img = torch.from_numpy(img.copy()).to(device)
-            (h,w,c) = img.shape
-            
-            img = img.float()
-            # print(img.type)
-            if img.ndimension() == 3:
-                img = img.unsqueeze(0)
-            print("final image size", img.shape)
-            pred = model(img)[0]
-            print("pred detecs", len(pred))
-            if opt.half:
-                pred = pred.float()
+            # Stream results
+            if view_img:
+                cv2.imshow(p, im0)
+                if cv2.waitKey(1) == ord('q'):  # q to quit
+                    raise StopIteration
 
-            # Apply NMS
-            pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
-            path = "testvid"
-            # Process detections
-            for i, det in enumerate(pred):  # detections per image
-                print("num detections", len(det))
-                # if webcam:  # batch _size >= 1
-                #     p, s, im0 = path[i], '%g: ' % i, im0s[i]
-                # else:F
-                p, s, im0 = path, '', im0s[0]
+            # Save results (image with detections)
+            if save_img:
+                if dataset.mode == 'images':
+                    cv2.imwrite(save_path, im0)
+                else:
+                    if vid_path != save_path:  # new video
+                        vid_path = save_path
+                        if isinstance(vid_writer, cv2.VideoWriter):
+                            vid_writer.release()  # release previous video writer
 
-                save_path = str(Path(out) / Path(p).name) + ".jpg"
-                s += '%gx%g ' % img.shape[2:]  # print string
-                if det is not None and len(det):
-                    # Rescale boxes from img_size to im0 size
-                    # det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
-                    # print(det[:, :5])
-                    # Print results
-                    for c in det[:, -1].unique():
-                        n = (det[:, -1] == c).sum()  # detections per class
-                        s += '%g %ss, ' % (n, names[int(c)])  # add to string
+                        fps = vid_cap.get(cv2.CAP_PROP_FPS)
+                        w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                        h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*opt.fourcc), fps, (w, h))
+                    vid_writer.write(im0)
 
-                    bbox_xywh = []
-                    confs = []
-
-                    # Write results
-                    for *xyxy, conf, cls in det:
-                        img_h, img_w, _ = im0.shape  # get image shape
-                        bbox_left = min([xyxy[0].item(), xyxy[2].item()])
-                        bbox_top = min([xyxy[1].item(), xyxy[3].item()])
-                        bbox_w = abs(xyxy[0].item() - xyxy[2].item())
-                        bbox_h = abs(xyxy[1].item() - xyxy[3].item())
-                        x_c, y_c, bbox_w, bbox_h = bbox_rel(img_w, img_h, bbox_left, bbox_top, bbox_w, bbox_h)
-                        #print(x_c, y_c, bbox_w, bbox_h)
-                        obj = [x_c, y_c, bbox_w, bbox_h]
-                        bbox_xywh.append(obj)
-                        confs.append([conf.item()])
-                        label = '%s %.2f' % (names[int(cls)], conf)
-                        #
-                        #print('bboxes')
-                        #print(torch.Tensor(bbox_xywh))
-                        #print('confs')
-                        #print(torch.Tensor(confs))
-                        outputs = deepsort.update((torch.Tensor(bbox_xywh)), (torch.Tensor(confs)) , im0)
-                        if len(outputs) > 0:
-                            bbox_xyxy = outputs[:, :4]
-                            identities = outputs[:, -1]
-                            draw_boxes(im0, bbox_xyxy, identities)
-                        #print('\n\n\t\ttracked objects')
-                        #print(outputs)
-
-                # Print time (inference + NMS)
-                print('%sDone. (%.3fs)' % (s, time.time() - t))
-
-                # Stream results
-                if view_img:
-                    cv2.imshow(p, im0)
-                    if cv2.waitKey(1) == ord('q'):  # q to quit
-                        raise StopIteration
-
-                # Save results (image with detections)
-                if save_img:
-                    if dataset.mode == 'images':
-                        cv2.imwrite(save_path, im0)
-                    else:
-                        if vid_path != save_path:  # new video
-                            vid_path = save_path
-                            if isinstance(vid_writer, cv2.VideoWriter):
-                                vid_writer.release()  # release previous video writer
-
-                            fps = vid_cap.get(cv2.CAP_PROP_FPS)
-                            w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                            h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                            vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*opt.fourcc), fps, (w, h))
-                        vid_writer.write(im0)
-    finally:
-
-        # Stop streaming
-        pipeline.stop()
     if save_txt or save_img:
         print('Results saved to %s' % os.getcwd() + os.sep + out)
         if platform == 'darwin':  # MacOS
@@ -415,10 +343,11 @@ if __name__ == '__main__':
     parser.add_argument('--cfg', type=str, default='yolov3/cfg/yolov3-spp.cfg', help='*.cfg path')
     parser.add_argument('--names', type=str, default='yolov3/data/coco.names', help='*.names path')
     parser.add_argument('--weights', type=str, default='yolov3/weights/yolov3-spp-ultralytics.pt', help='path to weights file')
+    parser.add_argument('--source', type=str, default='0', help='source')  # input file/folder, 0 for webcam
     parser.add_argument('--output', type=str, default='output', help='output folder')  # output folder
     parser.add_argument('--img-size', type=int, default=608, help='inference size (pixels)')
-    parser.add_argument('--conf-thres', type=float, default=0.9, help='object confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.98, help='IOU threshold for NMS')
+    parser.add_argument('--conf-thres', type=float, default=0.3, help='object confidence threshold')
+    parser.add_argument('--iou-thres', type=float, default=0.5, help='IOU threshold for NMS')
     parser.add_argument('--fourcc', type=str, default='mp4v', help='output video codec (verify ffmpeg support)')
     parser.add_argument('--half', action='store_true', help='half precision FP16 inference')
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')
@@ -430,4 +359,14 @@ if __name__ == '__main__':
     print(opt)
 
     with torch.no_grad():
-        detect()
+        # Setup
+        pipe = rs.pipeline()
+        cfg = rs.config()
+        
+        cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+        cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+
+        # Start streaming
+        profile = pipe.start(cfg)
+        path = rs.pipeline_profile()
+        detect(pipe,cfg,profile,path)
